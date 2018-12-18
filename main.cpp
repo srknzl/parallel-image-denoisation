@@ -14,7 +14,6 @@ map<string,int> getAvailablePixels(int);
 map<string,MPI_Request> sendAsynchronously();
 // Declarations of functions which will be used
 
-
 int * localData = nullptr; // Processors' local data
 int * noisyLocalData = nullptr; // Processors' local original image when they start processing(noisy)
 int* data = nullptr; // The noisy image read into this memory space in master processor
@@ -70,16 +69,12 @@ int main(int argc, char** argv) {
 
         string inputFileName = argv[1];
         // get input file
-
         string outputFileName = argv[2];
         // get output file
-
         beta = stod(argv[3]);
         // get beta
-
         pi = stod(argv[4]);
         // get pi
-
         gamma = (1.0/2)*log((1-pi)/pi);
         // compute gamma
 
@@ -104,21 +99,19 @@ int main(int argc, char** argv) {
             MPI_Send(&data[200*i*row_width],200*row_width,MPI_INT,i+1,0,MPI_COMM_WORLD);
         }
         // send image data
-
         for(int i= 0; i<world_size-1;i++){
             MPI_Send(&beta,1,MPI_DOUBLE,i+1,1,MPI_COMM_WORLD);
         }
         // send beta
-
         for(int i= 0; i<world_size-1;i++){
             MPI_Send(&pi,1,MPI_DOUBLE,i+1,2,MPI_COMM_WORLD);
         }
         // send pi
-
         for(int i= 0; i<world_size-1;i++){
             MPI_Send(&gamma,1,MPI_DOUBLE,i+1,3,MPI_COMM_WORLD);
         }
         // send gamma
+
     }else{ // If I am a slave I expect information from the master
 
         MPI_Status dataStat;
@@ -192,23 +185,19 @@ int main(int argc, char** argv) {
         iterationCounter++;
     }
 
-//    cout <<"processor"<< world_rank << ":" <<"gamma :"<<  gamma <<"beta :" << beta <<"pi :"<< pi << endl;
-
-
     /*if(world_rank!=0){
-        ofstream output;
-        string fileName = "data/localData";
-        output.open(fileName+to_string(world_rank)+".txt");
-        assert(output.is_open());
-        for(int i = 0;i<row_width;i++){
-            for(int j=0;j<200;j++)
-                output << localData[i*200+j] << " ";
-            output << endl;
-        }
-        output.close();
-    }*/
-
-
+     *    ofstream output;
+     *    string fileName = "data/localData";
+     *    output.open(fileName+to_string(world_rank)+".txt");
+     *    assert(output.is_open());
+     *    for(int i = 0;i<row_width;i++){
+     *        for(int j=0;j<200;j++)
+     *            output << localData[i*200+j] << " ";
+     *        output << endl;
+     *    }
+     *    output.close();
+     * }
+     */ // TODO: output
     delete [] data;
     delete [] localData;
     MPI_Finalize();

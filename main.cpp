@@ -6,7 +6,7 @@
 #include <ctime>
 #include <vector>
 
-#define NUM_OF_ITERATIONS 5000000
+#define NUM_OF_ITERATIONS 100000
 //# of iterations of monte carlo process
 using namespace std;
 
@@ -146,11 +146,11 @@ int main(int argc, char** argv) {
                 int sentBelow;
                 MPI_Test(&sendRequests["above"], &sentAbove ,&sendAboveStatus);
                 MPI_Test(&sendRequests["below"], &sentBelow ,&sendBelowStatus);
-            }else if(sendRequests.size() == 1 && sendRequests.find("above") != map::end()){ // if above found
+            }else if(sendRequests.size() == 1 && sendRequests.find("above") != sendRequests.end()){ // if above found
                 MPI_Status sendAboveStatus;
                 int sentAbove;
                 MPI_Test(&sendRequests["above"], &sentAbove ,&sendAboveStatus);
-            }else if(sendRequests.size() == 1 && sendRequests.find("below") != map::end()){ // if below found
+            }else if(sendRequests.size() == 1 && sendRequests.find("below") != sendRequests.end()){ // if below found
                 MPI_Status sendBelowStatus;
                 int sentBelow;
                 MPI_Test(&sendRequests["below"], &sentBelow ,&sendBelowStatus);
@@ -168,10 +168,207 @@ int main(int argc, char** argv) {
             int Xij = noisyLocalData[selectedPixel]; // Corresponding pixel value in noisy image
 
             map<string,int> availablePixels = getAvailablePixels(Zij);
-
             int sumAround = 0;
             int & sum = sumAround;
-            // just and alias to make formula simpler below
+
+            if( world_rank == 1 && selectedPixel< 200*row_width && selectedPixel >= 200*(row_width-1) ){
+                // first processor receives only from below if it is processing the last row
+                MPI_Status status;
+                int shared[200];
+                MPI_Recv(shared,200,MPI_INT,world_rank + 1,0,MPI_COMM_WORLD,&status);
+                int count;
+                MPI_Get_count(&status,MPI_INT,&count);
+                assert(status.MPI_SOURCE == world_rank + 1 && status.MPI_TAG == 0 && count == 200);
+
+                // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
+                if(availablePixels.find("bottomRight") == availablePixels.end()){ // right corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomLeft"){
+                            sum += shared[selectedPixel + 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                   }
+                }else if(availablePixels.find("bottomLeft") == availablePixels.end()){ // left corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomRight"){
+                            sum += shared[selectedPixel + 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else{
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomRight"){
+                            sum += shared[selectedPixel + 201];
+                        }else if(iterator->first == "bottomLeft"){
+                            sum += shared[selectedPixel + 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }
+
+            }else if(world_rank == world_size - 1 && selectedPixel < 200 && selectedPixel >= 0){
+                // last processor receives only from above if it is processing the last row
+                MPI_Status status;
+                int shared[200];
+                MPI_Recv(shared,200,MPI_INT,world_rank - 1,1,MPI_COMM_WORLD,&status);
+                int count;
+                MPI_Get_count(&status,MPI_INT,&count);
+                assert(status.MPI_SOURCE == world_rank - 1 && status.MPI_TAG == 1 && count == 200);
+
+                // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
+                if(availablePixels.find("topRight") == availablePixels.end()){ // right corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topLeft"){
+                            sum += shared[selectedPixel - 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else if(availablePixels.find("topLeft") == availablePixels.end()){ // left corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topRight"){
+                            sum += shared[selectedPixel - 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else{
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topRight"){
+                            sum += shared[selectedPixel - 199];
+                        }else if(iterator->first == "topLeft"){
+                            sum += shared[selectedPixel - 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }
+            }else if((world_rank != world_size - 1 && world_rank != 1) && selectedPixel < 200 && selectedPixel >= 0){
+                // other processors takes from above regardless of their position
+                MPI_Status status;
+                int shared[200];
+                MPI_Recv(shared,200,MPI_INT,world_rank-1,1,MPI_COMM_WORLD,&status);
+                int count;
+                MPI_Get_count(&status,MPI_INT,&count);
+                assert(status.MPI_SOURCE == world_rank-1 && status.MPI_TAG == 1 && count == 200);
+
+                // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
+                if(availablePixels.find("topRight") == availablePixels.end()){ // right corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topLeft"){
+                            sum += shared[selectedPixel - 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else if(availablePixels.find("topLeft") == availablePixels.end()){ // left corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topRight"){
+                            sum += shared[selectedPixel - 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else{
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "top"){
+                            sum += shared[selectedPixel - 200];
+                        }else if(iterator->first == "topRight"){
+                            sum += shared[selectedPixel - 199];
+                        }else if(iterator->first == "topLeft"){
+                            sum += shared[selectedPixel - 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }
+            }else if((world_rank != world_size - 1 && world_rank != 1) && selectedPixel< 200*row_width && selectedPixel >= 200*(row_width-1)){
+                // other processors takes from below regardless of their position
+                MPI_Status status;
+                int shared[200];
+                MPI_Recv(shared,200,MPI_INT,world_rank + 1,0,MPI_COMM_WORLD,&status);
+                int count;
+                MPI_Get_count(&status,MPI_INT,&count);
+                assert(status.MPI_SOURCE == world_rank + 1 && status.MPI_TAG == 0 && count == 200);
+
+                // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
+                if(availablePixels.find("bottomRight") == availablePixels.end()){ // right corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomLeft"){
+                            sum += shared[selectedPixel + 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else if(availablePixels.find("bottomLeft") == availablePixels.end()){ // left corner
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomRight"){
+                            sum += shared[selectedPixel + 201];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }else{
+                    while(!availablePixels.empty()){
+                        map<string,int>::iterator iterator = availablePixels.begin();
+                        if(iterator->first == "bottom"){
+                            sum += shared[selectedPixel +200];
+                        }else if(iterator->first == "bottomRight"){
+                            sum += shared[selectedPixel + 201];
+                        }else if(iterator->first == "bottomLeft"){
+                            sum += shared[selectedPixel + 199];
+                        }else{
+                            sum += localData[iterator->second];
+                        }
+                        availablePixels.erase(iterator);
+                    }
+                }
+            }
 
             double accProbability = exp(-2*gamma*Zij*Xij-2*beta*Zij*sum);
             double decision = min(1.0,accProbability);
@@ -183,21 +380,23 @@ int main(int argc, char** argv) {
         }
         MPI_Barrier(MPI_COMM_WORLD); // Everybody finishes its job to move to another iteration
         iterationCounter++;
+        if(iterationCounter % 1000 == 0 && world_rank == 1){
+            cout << "Iteration: " << iterationCounter<<endl;
+        }
     }
 
-    /*if(world_rank!=0){
-     *    ofstream output;
-     *    string fileName = "data/localData";
-     *    output.open(fileName+to_string(world_rank)+".txt");
-     *    assert(output.is_open());
-     *    for(int i = 0;i<row_width;i++){
-     *        for(int j=0;j<200;j++)
-     *            output << localData[i*200+j] << " ";
-     *        output << endl;
-     *    }
-     *    output.close();
-     * }
-     */ // TODO: output
+    if(world_rank!=0){
+         ofstream output;
+         string fileName = "data/localData";
+         output.open(fileName+to_string(world_rank)+".txt");
+         assert(output.is_open());
+         for(int i = 0;i<row_width;i++){
+             for(int j=0;j<200;j++)
+                 output << localData[i*200+j] << " ";
+             output << endl;
+         }
+         output.close();
+    }
     delete [] data;
     delete [] localData;
     MPI_Finalize();

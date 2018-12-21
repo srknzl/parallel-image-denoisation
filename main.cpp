@@ -5,11 +5,11 @@
 #include <cmath>
 #include <ctime>
 #include <vector>
+#include <random>
 
-#define NUM_OF_ITERATIONS 100000
+#define NUM_OF_ITERATIONS 5000
 //# of iterations of monte carlo process
 using namespace std;
-
 map<string,int> getAvailablePixels(int);
 map<string,MPI_Request> sendAsynchronously();
 // Declarations of functions which will be used
@@ -22,9 +22,9 @@ int world_size; // # of processors in total
 int world_rank; // current processor's id starting from 0
 map<string,MPI_Request> sendRequests; // Current processor's send requests
 int iterationCounter; // # of iterations done
+string outputFileName; // output file name.
 
 int main(int argc, char** argv) {
-    // comments will be written under or right of the code in this file except function definitions
 
     MPI_Init(&argc,&argv);
     // Initialize the MPI environment
@@ -60,16 +60,12 @@ int main(int argc, char** argv) {
         assert(localData != nullptr);
         // allocate local memory for slave processors and assert if localData is allocated
     }
-
-
      //  First, master processor reads from input file and scatters the data to all other processors
-
-
     if(world_rank==0){
 
         string inputFileName = argv[1];
         // get input file
-        string outputFileName = argv[2];
+        outputFileName = argv[2];
         // get output file
         beta = stod(argv[3]);
         // get beta
@@ -126,20 +122,19 @@ int main(int argc, char** argv) {
         MPI_Recv(&gamma,1,MPI_DOUBLE,0,3,MPI_COMM_WORLD,&gammaStat);
         // Note that tags were different above.
 
-
         noisyLocalData = new int[200*row_width];
         assert(noisyLocalData != nullptr);
         memcpy(localData,noisyLocalData, sizeof(int)*200*row_width);
+
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
     // this barrier ensures all slave processors start processing when all of the data is distributed
     while(iterationCounter < NUM_OF_ITERATIONS){
-        if(world_rank!=0){        // I start processing if I am not the master processor
+        if(world_rank!=0){// I start processing if I am not the master processor
             sendRequests = sendAsynchronously();
             // Before processing send shared pixels to avoid deadlock
-
-            if(sendRequests.size() == 2){ // if we have both below and above
+          if(sendRequests.size() == 2){ // if we have both below and above
                 MPI_Status sendAboveStatus;
                 MPI_Status sendBelowStatus;
                 int sentAbove;
@@ -158,10 +153,13 @@ int main(int argc, char** argv) {
                 fprintf(stderr,"Send Requests size is not 1 or 2");
                 exit(1);
             }
-            // Try to complete send operations, if cannot continue.
+            // Try to complete send operations, if cannot, continue.
 
-            srand(time(nullptr));
-            int selectedPixel = rand()%(200*row_width);
+            default_random_engine generator;
+            uniform_int_distribution<int> selection(0,200*row_width);
+            
+            int selectedPixel = selection(generator);
+
             //select a random pixel
 
             int Zij = localData[selectedPixel]; // Selected pixel value
@@ -169,7 +167,6 @@ int main(int argc, char** argv) {
 
             map<string,int> availablePixels = getAvailablePixels(Zij);
             int sumAround = 0;
-            int & sum = sumAround;
 
             if( world_rank == 1 && selectedPixel< 200*row_width && selectedPixel >= 200*(row_width-1) ){
                 // first processor receives only from below if it is processing the last row
@@ -177,7 +174,9 @@ int main(int argc, char** argv) {
                 int shared[200];
                 MPI_Recv(shared,200,MPI_INT,world_rank + 1,0,MPI_COMM_WORLD,&status);
                 int count;
+
                 MPI_Get_count(&status,MPI_INT,&count);
+                cout << count << endl;
                 assert(status.MPI_SOURCE == world_rank + 1 && status.MPI_TAG == 0 && count == 200);
 
                 // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
@@ -185,11 +184,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "bottomLeft"){
-                            sum += shared[selectedPixel + 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1 ];
                         }
                         availablePixels.erase(iterator);
                    }
@@ -197,11 +194,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "bottomRight"){
-                            sum += shared[selectedPixel + 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -209,13 +204,11 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel  % 200];
                         }else if(iterator->first == "bottomRight"){
-                            sum += shared[selectedPixel + 201];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }else if(iterator->first == "bottomLeft"){
-                            sum += shared[selectedPixel + 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -235,11 +228,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topLeft"){
-                            sum += shared[selectedPixel - 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1 ];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -247,11 +238,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topRight"){
-                            sum += shared[selectedPixel - 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -259,13 +248,11 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topRight"){
-                            sum += shared[selectedPixel - 199];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }else if(iterator->first == "topLeft"){
-                            sum += shared[selectedPixel - 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -284,11 +271,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topLeft"){
-                            sum += shared[selectedPixel - 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 - 1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -296,11 +281,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topRight"){
-                            sum += shared[selectedPixel - 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -308,13 +291,11 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "top"){
-                            sum += shared[selectedPixel - 200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "topRight"){
-                            sum += shared[selectedPixel - 199];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }else if(iterator->first == "topLeft"){
-                            sum += shared[selectedPixel - 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -333,11 +314,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "bottomLeft"){
-                            sum += shared[selectedPixel + 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 -1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -345,11 +324,9 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "bottomRight"){
-                            sum += shared[selectedPixel + 201];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }
                         availablePixels.erase(iterator);
                     }
@@ -357,45 +334,55 @@ int main(int argc, char** argv) {
                     while(!availablePixels.empty()){
                         map<string,int>::iterator iterator = availablePixels.begin();
                         if(iterator->first == "bottom"){
-                            sum += shared[selectedPixel +200];
+                            sumAround += shared[selectedPixel % 200];
                         }else if(iterator->first == "bottomRight"){
-                            sum += shared[selectedPixel + 201];
+                            sumAround += shared[selectedPixel % 200 + 1];
                         }else if(iterator->first == "bottomLeft"){
-                            sum += shared[selectedPixel + 199];
-                        }else{
-                            sum += localData[iterator->second];
+                            sumAround += shared[selectedPixel % 200 - 1];
                         }
                         availablePixels.erase(iterator);
                     }
                 }
             }
-
-            double accProbability = exp(-2*gamma*Zij*Xij-2*beta*Zij*sum);
+            if(iterationCounter % 1000 == 0)
+                cout <<"sum: " <<sumAround << endl;
+            double accProbability = exp(-2*gamma*Zij*Xij-2*beta*Zij*sumAround);
             double decision = min(1.0,accProbability);
 
-            double tossedCoin = ((double) rand() / (RAND_MAX)); // Random value between 0 and 1
+            uniform_real_distribution<double> selection2(0,1);
+
+            double tossedCoin = selection2(generator); // Random value between 0 and 1
             if( decision >= tossedCoin ){ // Flip the bit with probability 'decision'
                 localData[selectedPixel] = Zij*-1;
             }
         }
         MPI_Barrier(MPI_COMM_WORLD); // Everybody finishes its job to move to another iteration
+
         iterationCounter++;
         if(iterationCounter % 1000 == 0 && world_rank == 1){
+
             cout << "Iteration: " << iterationCounter<<endl;
         }
     }
-
+    
     if(world_rank!=0){
-         ofstream output;
-         string fileName = "data/localData";
-         output.open(fileName+to_string(world_rank)+".txt");
-         assert(output.is_open());
-         for(int i = 0;i<row_width;i++){
-             for(int j=0;j<200;j++)
-                 output << localData[i*200+j] << " ";
-             output << endl;
-         }
-         output.close();
+        MPI_Send(&localData[0],200*row_width,MPI_INT,0,0,MPI_COMM_WORLD);
+    }else{
+        MPI_Status stat;
+        int * output;
+        output = (int*) malloc(sizeof(int)*200*200);
+        for(int i=1;i<world_size;i++)
+            MPI_Recv(&output[row_width*200*(i-1)],row_width*200,MPI_INT,
+            i,0,MPI_COMM_WORLD,&stat);
+        ofstream out;
+        out.open(outputFileName);
+        for(int i = 0; i < 200 ;i++){
+            for(int j = 0; j < 200;j++){
+                out << output[200*i+j] << " ";
+            }
+            out << endl;
+        }
+        delete output;
     }
     delete [] data;
     delete [] localData;

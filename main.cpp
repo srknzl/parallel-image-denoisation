@@ -1,20 +1,18 @@
 #include <mpi.h>
 #include <iostream>
 #include <fstream>
-#include <cassert>
 #include <cmath>
 #include <ctime>
 #include <vector>
 #include <random>
 #include <chrono>
 
-#define NUM_OF_ITERATIONS 5000
+#define NUM_OF_ITERATIONS 500000
 //# of iterations of monte carlo process
 using namespace std;
 
 map<string,int> getAvailablePixels(int);
-map<string,MPI_Request> sendAsynchronously();
-void tryToSend(map<string,MPI_Request>);
+void send();
 // Declarations of functions which will be used
 
 
@@ -25,7 +23,8 @@ int row_width; // This is the number of rows per processor. Note, (row_width) * 
 int world_size; // # of processors in total
 int world_rank; // current processor's id starting from 0
 
-map<string,MPI_Request> sendRequests; // Current processor's send requests
+int sharedAbove[200];
+int sharedBelow[200];
 
 int iterationCounter; // # of iterations done
 string outputFileName; // output file name.
@@ -58,11 +57,17 @@ int main(int argc, char** argv) {
 
     if(world_rank==0) {
         data = new int[200 * 200];
-        assert(data != nullptr);
+        if(!data){
+            cerr << "Allocation error in master processor";
+            exit(1);
+        }
         // Allocate memory for image data to be used by master processor and assert data is allocated
     }else if(world_rank!=0) {
         localData = new int[row_width*200];
-        assert(localData != nullptr);
+        if(!localData){
+            cerr << "Allocation error in slave processor";
+            exit(1);
+        }
         // allocate local memory for slave processors and assert if localData is allocated
     }
      //  First, master processor reads from input file and scatters the data to all other processors
@@ -80,7 +85,10 @@ int main(int argc, char** argv) {
 
         ifstream inputFile;
         inputFile.open(inputFileName);
-        assert(inputFile.is_open());
+        if(!inputFile.is_open()){
+            cerr << "Cannot open input file";
+            exit(1);
+        }
         for(int i=0;i<200;i++) {
             for(int j=0;j<200;j++) {
                 string a;
@@ -114,38 +122,41 @@ int main(int argc, char** argv) {
 
     }else{ // If I am a slave I expect information from the master
 
-        MPI_Status dataStat;
-        MPI_Status betaStat;
-        MPI_Status piStat;
-        MPI_Status gammaStat;
-        // Receiving statuses are stored here
 
-        MPI_Recv(localData,200*row_width,MPI_INT,0,0,MPI_COMM_WORLD,&dataStat);
+        MPI_Recv(localData,200*row_width,MPI_INT,0,0,MPI_COMM_WORLD,nullptr);
         int count;
-        MPI_Get_count(&dataStat,MPI_INT,&count);
-        assert(count == 200*row_width);
-        MPI_Recv(&beta,1,MPI_DOUBLE,0,1,MPI_COMM_WORLD,&betaStat);
-        MPI_Recv(&pi,1,MPI_DOUBLE,0,2,MPI_COMM_WORLD,&piStat);
-        MPI_Recv(&gamma,1,MPI_DOUBLE,0,3,MPI_COMM_WORLD,&gammaStat);
+        MPI_Recv(&beta,1,MPI_DOUBLE,0,1,MPI_COMM_WORLD,nullptr);
+        MPI_Recv(&pi,1,MPI_DOUBLE,0,2,MPI_COMM_WORLD,nullptr);
+        MPI_Recv(&gamma,1,MPI_DOUBLE,0,3,MPI_COMM_WORLD,nullptr);
         // Note that tags were different above.
 
         noisyLocalData = new int[200*row_width];
-        assert(noisyLocalData != nullptr);
+        if(!noisyLocalData){
+            cerr << "Cannot allocate memory for noisy image in slave processors";
+            exit(1);
+        }
         memcpy(noisyLocalData,localData, sizeof(int)*200*row_width);
+        // noisyLocalData is original non changing local noisy image
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
     // this barrier ensures all slave processors start processing when all of the data is distributed
     while(iterationCounter < NUM_OF_ITERATIONS){
         if(world_rank!=0){// I start processing if I am not the master processor
-            sendRequests = sendAsynchronously();
             // Before processing send shared pixels to avoid deadlock
+            send();
+            if(world_rank == 1){
+                MPI_Recv(sharedBelow,200,MPI_INT, world_rank + 1 , 0,MPI_COMM_WORLD,nullptr);
+            }else if(world_rank == world_size -1){
+                MPI_Recv(sharedAbove,200,MPI_INT, world_rank - 1 ,1,MPI_COMM_WORLD,nullptr);
+            }else{
+                MPI_Recv(sharedAbove,200,MPI_INT, world_rank - 1 ,1,MPI_COMM_WORLD,nullptr);
+                MPI_Recv(sharedBelow,200,MPI_INT, world_rank + 1 , 0,MPI_COMM_WORLD,nullptr);
+            }
 
-            // Try to complete send operations, if cannot, continue.
             long seed = std::chrono::system_clock::now().time_since_epoch().count();
             std::default_random_engine generator (seed);
             uniform_int_distribution<int> selection(0,200*row_width-1);
-            
             int selectedPixel = selection(generator);
 
             //select a random pixel
@@ -155,58 +166,32 @@ int main(int argc, char** argv) {
 
             map<string,int> availablePixels = getAvailablePixels(selectedPixel);
             int sumAround = 0;
-//            cout << selectedPixel << endl;
             if(selectedPixel < 200 && selectedPixel >= 0){
-                tryToSend(sendRequests);
                 if(world_rank != 1){
-                    MPI_Status status;
-                    MPI_Request request;
-                    int shared[200];
-                    int count;
-
-                    MPI_Irecv(shared,200,MPI_INT,world_rank-1,1,MPI_COMM_WORLD,&request);
-                    MPI_Wait(&request,&status);
-
-                    MPI_Get_count(&status,MPI_INT,&count);
-                    assert(status.MPI_SOURCE == world_rank - 1 );
-                    assert(status.MPI_TAG == 1);
-                    assert(count == 200);
-                    //cout << shared[0];
                     // next calculate sums. Take shared pixels from neighbors in blocking fashion if necessary.
                     if(availablePixels.find("topRight") != availablePixels.end()){ // right corner
-                        sumAround += shared[selectedPixel % 200 + 1 ];
+                        sumAround += sharedAbove[selectedPixel % 200 + 1 ];
                         availablePixels.erase(availablePixels.find("topRight"));
                     }else if(availablePixels.find("topLeft") != availablePixels.end()){ // left corner
-                        sumAround += shared[selectedPixel % 200 - 1];
+                        sumAround += sharedAbove[selectedPixel % 200 - 1];
                         availablePixels.erase(availablePixels.find("topLeft"));
                     }else if(availablePixels.find("top") != availablePixels.end()){
-                        sumAround += shared[selectedPixel % 200];
+                        sumAround += sharedAbove[selectedPixel % 200];
                         availablePixels.erase(availablePixels.find("top"));
                     }
 
                 }
             }else if(selectedPixel< 200*row_width && selectedPixel >= 200*(row_width-1)){
-                tryToSend(sendRequests);
+
                 if(world_rank != world_size - 1){
-                    MPI_Status status;
-                    MPI_Request request;
-                    int shared[200];
-                    int count;
-                    MPI_Irecv(shared,200,MPI_INT,world_rank+1,0,MPI_COMM_WORLD,&request);
-                    MPI_Wait(&request,&status);
-                    // cout << shared[0];
-                    MPI_Get_count(&status,MPI_INT,&count);
-                    assert(status.MPI_SOURCE == world_rank + 1 );
-                    assert(status.MPI_TAG == 0);
-                    assert(count == 200);
                     if(availablePixels.find("bottomRight") != availablePixels.end()){ // right corner
-                        sumAround += shared[selectedPixel % 200 + 1];
+                        sumAround += sharedBelow[selectedPixel % 200 + 1];
                         availablePixels.erase(availablePixels.find("bottomRight"));
                     }else if(availablePixels.find("bottomLeft") != availablePixels.end()){ // left corner
-                        sumAround += shared[selectedPixel % 200 - 1];
+                        sumAround += sharedBelow[selectedPixel % 200 - 1];
                         availablePixels.erase(availablePixels.find("bottomLeft"));
                     }else if(availablePixels.find("bottom") != availablePixels.end()){
-                        sumAround += shared[selectedPixel % 200];
+                        sumAround += sharedBelow[selectedPixel % 200];
                         availablePixels.erase(availablePixels.find("bottom"));
                     }
 
@@ -246,10 +231,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-
-            if(iterationCounter % 1000 == 0){
-                cout <<"sum: " <<sumAround << endl;
-            }
             double accProbability = exp(-2*gamma*Zij*Xij-2*beta*Zij*sumAround);
             double decision = min(1.0,accProbability);
 
@@ -260,10 +241,9 @@ int main(int argc, char** argv) {
                 localData[selectedPixel] = Zij*-1;
             }
         }
-        MPI_Barrier(MPI_COMM_WORLD); // Everybody finishes its job to move to another iteration
 
         iterationCounter++;
-        if(iterationCounter % 1000 == 0 && world_rank == 1){
+        if(iterationCounter % 10000 == 0 && world_rank == 1){
 
             cout << "Iteration: " << iterationCounter<<endl;
         }
@@ -272,12 +252,11 @@ int main(int argc, char** argv) {
     if(world_rank!=0){
         MPI_Send(&localData[0],200*row_width,MPI_INT,0,0,MPI_COMM_WORLD);
     }else{
-        MPI_Status stat;
         int * output;
         output = (int*) malloc(sizeof(int)*200*200);
         for(int i=1;i<world_size;i++)
             MPI_Recv(&output[row_width*200*(i-1)],row_width*200,MPI_INT,
-            i,0,MPI_COMM_WORLD,&stat);
+            i,0,MPI_COMM_WORLD,nullptr);
         ofstream out;
         out.open(outputFileName);
         for(int i = 0; i < 200 ;i++){
@@ -308,11 +287,11 @@ map<string,int> getAvailablePixels(int index){
     if(!(index<200 && index>=0))ret["top"] = 1;
     // !(index<200 && index>=0) means not in first row
     // So if not in first row we have a top neighbor pixel
-    if(!(index<200 && index>=0) || index % 200 != 0)ret["topLeft"] = 1;
+    if(!(index<200 && index>=0) && index % 200 != 0)ret["topLeft"] = 1;
     // !(index<200 && index>=0) means not in first row
     // index % 200 != 0 means not in left most column
     // So if not in first row or left most column we have a top left neighbor pixel
-    if(!(index<200 && index>=0) || index % 200 != 199)ret["topRight"] = 1;
+    if(!(index<200 && index>=0) && index % 200 != 199)ret["topRight"] = 1;
     // !(index<200 && index>=0) means not in first row
     // index % 200 != 199 means not in right most column
     // So if not in first row or right most column we have a top right neighbor pixel
@@ -325,65 +304,33 @@ map<string,int> getAvailablePixels(int index){
     if(!(index<row_width*200 && index >= (row_width-1)*200)) ret["bottom"] = 1;
     // !(index<row_width*200 && index >= (row_width-1)*200) means not in last row.
     // So if not in last row it has a bottom pixel
-    if(!(index<row_width*200 && index >= (row_width-1)*200) || index % 200 != 0)ret["bottomLeft"] = 1;
+    if(!(index<row_width*200 && index >= (row_width-1)*200) && index % 200 != 0)ret["bottomLeft"] = 1;
     // !(index<row_width*200 && index >= (row_width-1)*200) means not in last row.
     // index % 200 != 0  means not in left most column
     // So if not in last row or left most column has a bottom left neighbor pixel
-    if(!(index<row_width*200 && index >= (row_width-1)*200) || index % 200 != 199)ret["bottomRight"]= 1;
+    if(!(index<row_width*200 && index >= (row_width-1)*200) && index % 200 != 199)ret["bottomRight"]= 1;
     // !(index<row_width*200 && index >= (row_width-1)*200) means not in last row.
     // index % 200 != 0  means not in right most column
     // So if not in last row or right most column has a bottom right neighbor pixel
     return ret;
 }
 /*
- * Function sendAsynchronously():
+ * Function send():
  *
- * Definition =>  A processor sends shared pixel values to above and below processors in non-blocking
+ * Definition =>  A processor sends shared pixel values to above and below processors in blocking
  * fashion.
  *
- * return => A map where keys are either "below" and "above", and the value are corresponding requests.
  * Notes: Tag will be 1 if sending data to below processor, and will be 0 if sending to above one.
  * As a result a processor will get data from above by calling receive with tag 1, and
  * will get data from below by calling receive with tag 0.
  */
-map<string,MPI_Request> sendAsynchronously(){
-    map<string,MPI_Request> requests;
+void send(){
     if( world_rank == 1 ){ // First processor should only send to the processor below
-        MPI_Request sendBelowReq;
-        MPI_Isend(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD,&sendBelowReq);
-        requests["below"]=sendBelowReq;
+        MPI_Send(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD);
     }else if( world_rank == world_size - 1 ){ // Last processor should only send to the processor above
-        MPI_Request sendAboveReq;
-        MPI_Isend(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD,&sendAboveReq);
-        requests["above"]=sendAboveReq;
+        MPI_Send(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD);
     }else{
-        MPI_Request sendAboveReq;
-        MPI_Request sendBelowReq;
-        MPI_Isend(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD,&sendAboveReq);
-        MPI_Isend(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD,&sendBelowReq);
-        requests["below"]=sendBelowReq;
-        requests["above"]=sendAboveReq;
-    }
-    return requests;
-}
-void tryToSend(map<string,MPI_Request> sendRequests){
-    if(sendRequests.size() == 2){ // if we have both below and above
-        MPI_Status sendAboveStatus;
-        MPI_Status sendBelowStatus;
-        int sentAbove;
-        int sentBelow;
-        MPI_Test(&sendRequests["above"], &sentAbove ,&sendAboveStatus);
-        MPI_Test(&sendRequests["below"], &sentBelow ,&sendBelowStatus);
-    }else if(sendRequests.size() == 1 && sendRequests.find("above") != sendRequests.end()){ // if above found
-        MPI_Status sendAboveStatus;
-        int sentAbove;
-        MPI_Test(&sendRequests["above"], &sentAbove ,&sendAboveStatus);
-    }else if(sendRequests.size() == 1 && sendRequests.find("below") != sendRequests.end()){ // if below found
-        MPI_Status sendBelowStatus;
-        int sentBelow;
-        MPI_Test(&sendRequests["below"], &sentBelow ,&sendBelowStatus);
-    }else{
-        fprintf(stderr,"Send Requests size is not 1 or 2");
-        exit(1);
+        MPI_Send(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD);
+        MPI_Send(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD);
     }
 }

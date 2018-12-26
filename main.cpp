@@ -1,3 +1,10 @@
+/*
+Student Name: Serkan Özel
+Student Number: 2015400123
+Compile Status: Compiling
+Program Status: Working
+Notes: Not implemented the extra processor architecture and avoidance of unnecessary shared pixel exchange.
+*/
 #include <mpi.h>
 #include <iostream>
 #include <fstream>
@@ -23,7 +30,7 @@ int row_width; // This is the number of rows per processor. Note, (row_width) * 
 int world_size; // # of processors in total
 int world_rank; // current processor's id starting from 0
 
-int sharedAbove[200];
+int sharedAbove[200]; // Shared pixels of the current processor
 int sharedBelow[200];
 
 int iterationCounter; // # of iterations done
@@ -143,7 +150,6 @@ int main(int argc, char** argv) {
     // this barrier ensures all slave processors start processing when all of the data is distributed
     while(iterationCounter < NUM_OF_ITERATIONS){
         if(world_rank!=0){// I start processing if I am not the master processor
-            // Before processing send shared pixels to avoid deadlock
             send();
             if(world_rank == 1){
                 MPI_Recv(sharedBelow,200,MPI_INT, world_rank + 1 , 0,MPI_COMM_WORLD,nullptr);
@@ -153,7 +159,8 @@ int main(int argc, char** argv) {
                 MPI_Recv(sharedAbove,200,MPI_INT, world_rank - 1 ,1,MPI_COMM_WORLD,nullptr);
                 MPI_Recv(sharedBelow,200,MPI_INT, world_rank + 1 , 0,MPI_COMM_WORLD,nullptr);
             }
-
+            // Before processing, send shared pixels to avoid deadlock
+            // Basically all shared pixels are exchanged before processing
             long seed = std::chrono::system_clock::now().time_since_epoch().count();
             std::default_random_engine generator (seed);
             uniform_int_distribution<int> selection(0,200*row_width-1);
@@ -230,6 +237,8 @@ int main(int argc, char** argv) {
                     availablePixels.erase(it);
                 }
             }
+            // This loop takes care of the rest of the available pixels.
+
 
             double accProbability = exp(-2*gamma*Zij*Xij-2*beta*Zij*sumAround);
             double decision = min(1.0,accProbability);
@@ -244,19 +253,21 @@ int main(int argc, char** argv) {
 
         iterationCounter++;
         if(iterationCounter % 10000 == 0 && world_rank == 1){
-
             cout << "Iteration: " << iterationCounter<<endl;
         }
+        // Just to note show the execution point
     }
     
     if(world_rank!=0){
-        MPI_Send(&localData[0],200*row_width,MPI_INT,0,0,MPI_COMM_WORLD);
+        MPI_Send(&localData[0],200*row_width,MPI_INT,0,0,MPI_COMM_WORLD); // We send data to master processor
+        // in order to get our data printed.
     }else{
         int * output;
         output = (int*) malloc(sizeof(int)*200*200);
         for(int i=1;i<world_size;i++)
             MPI_Recv(&output[row_width*200*(i-1)],row_width*200,MPI_INT,
-            i,0,MPI_COMM_WORLD,nullptr);
+            i,0,MPI_COMM_WORLD,nullptr); // In this loop we get the local data of the slave processors
+        // and put them in the output array that is 200x200.
         ofstream out;
         out.open(outputFileName);
         for(int i = 0; i < 200 ;i++){
@@ -267,19 +278,20 @@ int main(int argc, char** argv) {
         }
         delete output;
     }
+    // Finalize the MPI environment and deallocate stuff.
     delete [] data;
     delete [] localData;
     MPI_Finalize();
-    // Finalize the MPI environment and deallocate stuff.
 
 }
 /*  Function getAvailablePixels
  *
  * Def: Given index a pixel find which neighbors are available.
  *
- * parameter => index : int = the index of the pixel that we want to find neighbors of.
+ * parameter => int index  = the index of the pixel that we want to find neighbors of.
  * return =>  map<string,int> : a map where keys
- * are names like "top", "topRight","bottomLeft" and value are indexes of them.
+ * are strings like "top", "topRight","bottomLeft" and value are 1, indicating
+ * that direction of the pixel is valid.
  *
  */
 map<string,int> getAvailablePixels(int index){
@@ -320,16 +332,16 @@ map<string,int> getAvailablePixels(int index){
  * Definition =>  A processor sends shared pixel values to above and below processors in blocking
  * fashion.
  *
- * Notes: Tag will be 1 if sending data to below processor, and will be 0 if sending to above one.
- * As a result a processor will get data from above by calling receive with tag 1, and
- * will get data from below by calling receive with tag 0.
+ * Notes: Tag will be 1 if sending data to a processor below, and will be 0 if sending to one above.
+ * As a result, a processor will get data from above by calling "recv" with tag 1, and
+ * will get data from below by calling "recv" with tag 0.
  */
 void send(){
     if( world_rank == 1 ){ // First processor should only send to the processor below
         MPI_Send(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD);
     }else if( world_rank == world_size - 1 ){ // Last processor should only send to the processor above
         MPI_Send(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD);
-    }else{
+    }else{ // Others send to both direction
         MPI_Send(localData,200,MPI_INT,world_rank-1,0,MPI_COMM_WORLD);
         MPI_Send(&localData[(row_width-1)*200],200,MPI_INT,world_rank+1,1,MPI_COMM_WORLD);
     }
